@@ -1,0 +1,89 @@
+digraph data_flow {
+    graph [
+        bgcolor="#0d1117"
+        fontname="Courier New"
+        fontcolor="#c9d1d9"
+        label="duel — AppCommand Channel Data Flow"
+        labelloc="t"
+        fontsize=18
+        pad="0.6"
+        rankdir=LR
+        ranksep=1.8
+        nodesep=0.6
+    ]
+    node [
+        fontname="Courier New"
+        fontsize=11
+        style="filled,rounded"
+        shape=box
+    ]
+    edge [
+        fontname="Courier New"
+        fontsize=9
+        fontcolor="#8b949e"
+        arrowsize=0.8
+    ]
+
+    subgraph cluster_producers {
+        label="Async Producers\n(tokio::spawn tasks)"
+        style="filled,rounded"
+        fillcolor="#0d1a0d"
+        color="#3fb950"
+        fontcolor="#c9d1d9"
+        fontsize=12
+
+        prewarm   [label="pre_warm()\ntask", fillcolor="#1a2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        actor_t   [label="run_actor()\ntask", fillcolor="#1a2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        critic_t  [label="run_critic()\ntask", fillcolor="#1a2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        gpu_t     [label="gpu::poll_loop()\ntask (5s interval)", fillcolor="#1a2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+    }
+
+    subgraph cluster_channel {
+        label="mpsc::channel\n(capacity = 256)"
+        style="filled,rounded"
+        fillcolor="#1a1a2e"
+        color="#58a6ff"
+        fontcolor="#c9d1d9"
+        fontsize=12
+
+        cmd_token     [label="Token { role, token }", fillcolor="#0d1a3b" color="#58a6ff" fontcolor="#c9d1d9"]
+        cmd_turndone  [label="TurnDone { role,\neval_count,\nduration_ms }", fillcolor="#0d1a3b" color="#58a6ff" fontcolor="#c9d1d9"]
+        cmd_ready     [label="ModelReady", fillcolor="#0d1a3b" color="#58a6ff" fontcolor="#c9d1d9"]
+        cmd_error     [label="LoopError(String)", fillcolor="#3b0a0a" color="#f85149" fontcolor="#c9d1d9"]
+        cmd_gpu       [label="GpuStatus(Vec<GpuInfo>)", fillcolor="#2a1a0a" color="#d29922" fontcolor="#c9d1d9"]
+        cmd_status    [label="StatusMsg(String)", fillcolor="#0d1a3b" color="#6e7681" fontcolor="#c9d1d9"]
+    }
+
+    subgraph cluster_consumer {
+        label="App::handle_command()\n(main event loop)"
+        style="filled,rounded"
+        fillcolor="#1a0d1a"
+        color="#bc8cff"
+        fontcolor="#c9d1d9"
+        fontsize=12
+
+        h_token    [label="→ actor_buf /\n   critic_buf.push(token)", fillcolor="#2e1a3b" color="#bc8cff" fontcolor="#c9d1d9"]
+        h_done     [label="→ history.push(Turn)\n→ extract_score()\n→ spawn next task", fillcolor="#2e1a3b" color="#bc8cff" fontcolor="#c9d1d9"]
+        h_ready    [label="→ state = ActorThink\n→ spawn_actor()", fillcolor="#2e1a3b" color="#bc8cff" fontcolor="#c9d1d9"]
+        h_error    [label="→ state = Error(msg)\n→ status = err", fillcolor="#3b1a1a" color="#f85149" fontcolor="#c9d1d9"]
+        h_gpu      [label="→ app.gpu = gpus\n(title bar update)", fillcolor="#2e1a3b" color="#d29922" fontcolor="#c9d1d9"]
+        h_status   [label="→ app.status = msg\n(status bar)", fillcolor="#2e1a3b" color="#6e7681" fontcolor="#c9d1d9"]
+    }
+
+    prewarm  -> cmd_ready  [color="#3fb950"]
+    prewarm  -> cmd_error  [color="#f85149", style=dashed]
+    actor_t  -> cmd_token  [color="#3fb950", label="per token"]
+    actor_t  -> cmd_turndone [color="#3fb950", label="on done:true"]
+    actor_t  -> cmd_error  [color="#f85149", style=dashed]
+    critic_t -> cmd_token  [color="#e3b341", label="per token"]
+    critic_t -> cmd_turndone [color="#e3b341", label="on done:true"]
+    critic_t -> cmd_error  [color="#f85149", style=dashed]
+    gpu_t    -> cmd_gpu    [color="#d29922"]
+
+    cmd_token    -> h_token   [color="#58a6ff"]
+    cmd_turndone -> h_done    [color="#58a6ff"]
+    cmd_ready    -> h_ready   [color="#58a6ff"]
+    cmd_error    -> h_error   [color="#f85149"]
+    cmd_gpu      -> h_gpu     [color="#d29922"]
+    cmd_status   -> h_status  [color="#6e7681"]
+}

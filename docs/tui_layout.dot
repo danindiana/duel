@@ -1,0 +1,92 @@
+digraph tui_layout {
+    graph [
+        bgcolor="#0d1117"
+        fontname="Courier New"
+        fontcolor="#c9d1d9"
+        label="duel — TUI Layout (Ratatui Widgets)"
+        labelloc="t"
+        fontsize=18
+        pad="0.5"
+        rankdir=TB
+        ranksep=0.8
+        nodesep=0.6
+    ]
+    node [
+        fontname="Courier New"
+        fontsize=11
+        style="filled,rounded"
+        shape=box
+    ]
+    edge [
+        fontname="Courier New"
+        fontsize=9
+        fontcolor="#8b949e"
+        arrowsize=0.7
+        color="#444c56"
+    ]
+
+    draw [
+        label="draw(Frame, App)\nroutes on App::state"
+        fillcolor="#1a1a2e"
+        color="#58a6ff"
+        fontcolor="#c9d1d9"
+    ]
+
+    subgraph cluster_prompt {
+        label="View A: Prompt Entry  (state == Idle)"
+        style="filled,rounded"
+        fillcolor="#0d1a0d"
+        color="#3fb950"
+        fontcolor="#c9d1d9"
+        fontsize=12
+
+        pv_title [label="Title bar (1 line)\n'duel · qwen3.5:4b · [theme]'\nParagraph, bg=title_bg",    fillcolor="#0d2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        pv_input [label="Input Box (3 lines)\nBorderType::Double\nglow_style() border\n'> {input_buf} cursor'", fillcolor="#0d2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        pv_desc  [label="Description (2 lines)\n'Actor > Critic > Actor > inf'\nStatic Paragraph",        fillcolor="#0d2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+        pv_stat  [label="Status bar (1 line)\n'Enter:start  Backspace:del'\nParagraph, bg=title_bg",       fillcolor="#0d2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+    }
+
+    subgraph cluster_duel {
+        label="View B: Duel Loop  (state != Idle)"
+        style="filled,rounded"
+        fillcolor="#0d1a2e"
+        color="#58a6ff"
+        fontcolor="#c9d1d9"
+        fontsize=12
+
+        dv_title [label="Title bar (1 line)\n'duel · qwen3.5:4b  iter N  · [GPU] [theme]'\nState badge: RUNNING / PAUSED / ERROR\nParagraph + badge overlay",   fillcolor="#1a2e4a" color="#58a6ff" fontcolor="#c9d1d9"]
+
+        subgraph cluster_panels {
+            label="Live Panels (60% height)  —  horizontal split"
+            style="filled,rounded"
+            fillcolor="#101a20"
+            color="#3fb950"
+            fontcolor="#c9d1d9"
+            fontsize=11
+
+            panel_actor  [label="Actor Panel (55%)\nBlock title: 'ACTOR' cyan\nglow border when ActorThink\nStreaming actor_buf or last Turn\nWrap words",  fillcolor="#0d2e1a" color="#3fb950" fontcolor="#c9d1d9"]
+            panel_critic [label="Critic Panel (45%)\nBlock title: 'CRITIC  9/10' gold\nScore color: green/yellow/red\nglow border when CriticThink\nStreaming critic_buf or last Turn", fillcolor="#2e1a0a" color="#e3b341" fontcolor="#c9d1d9"]
+        }
+
+        dv_history [label="History Pane (remaining height)\nScrollable Paragraph\nPer-turn: header + snippet\nNewest-at-bottom scrolling\nUp/Down keys adjust scroll",  fillcolor="#1a1a2e" color="#bc8cff" fontcolor="#c9d1d9"]
+        dv_status  [label="Status bar (1 line)\nContext-sensitive key hints\nrunning:  'Space:pause  s:save'\npaused:   'Space:resume  e:edit'", fillcolor="#1a2e4a" color="#58a6ff" fontcolor="#c9d1d9"]
+    }
+
+    help [
+        label="Help Overlay (any state, ?-key)\nClear widget under popup\nRounded-border Block, centered\nKeybinding table: key -> action"
+        fillcolor="#1f0d3b"
+        color="#bc8cff"
+        fontcolor="#c9d1d9"
+    ]
+
+    draw -> pv_title  [label="Idle"]
+    draw -> dv_title  [label="non-Idle"]
+    draw -> help      [label="show_help=true\n(overlay)", style=dashed]
+
+    pv_title -> pv_input -> pv_desc -> pv_stat [label="vertical\nlayout"]
+    dv_title -> panel_actor  [label="horiz split"]
+    dv_title -> panel_critic [label="horiz split"]
+    panel_actor  -> dv_history [label="below panels"]
+    panel_critic -> dv_history [style=invis]
+    dv_history   -> dv_status  [label="below history"]
+}

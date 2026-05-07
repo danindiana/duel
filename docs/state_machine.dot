@@ -1,0 +1,51 @@
+digraph state_machine {
+    graph [
+        bgcolor="#0d1117"
+        fontname="Courier New"
+        fontcolor="#c9d1d9"
+        label="duel — LoopState State Machine"
+        labelloc="t"
+        fontsize=18
+        pad="0.6"
+        ranksep=1.2
+        nodesep=0.9
+    ]
+    node [
+        fontname="Courier New"
+        fontsize=12
+        style="filled"
+        shape=oval
+        fixedsize=false
+    ]
+    edge [
+        fontname="Courier New"
+        fontsize=10
+        fontcolor="#8b949e"
+        arrowsize=0.9
+    ]
+
+    Idle        [label="Idle\n(prompt entry)", fillcolor="#1f4068" color="#58a6ff" fontcolor="#ffffff"]
+    Prewarm     [label="Prewarm\n(model loading)", fillcolor="#2a2a0a" color="#d29922" fontcolor="#ffffff"]
+    ActorThink  [label="ActorThink\n(streaming tokens)", fillcolor="#0d3b2e" color="#3fb950" fontcolor="#ffffff"]
+    CriticThink [label="CriticThink\n(streaming tokens)", fillcolor="#3b2a0a" color="#e3b341" fontcolor="#ffffff"]
+    Paused      [label="Paused\n(user interrupted)", fillcolor="#3b1f4e" color="#bc8cff" fontcolor="#ffffff"]
+    Error       [label="Error(msg)\n(async failure)", fillcolor="#3b0a0a" color="#f85149" fontcolor="#ffffff"]
+
+    start [shape=point, style=filled, fillcolor="#c9d1d9", width=0.2]
+    start -> Idle
+
+    Idle        -> Prewarm     [label="Enter key\n(prompt non-empty)", color="#58a6ff"]
+    Prewarm     -> ActorThink  [label="AppCommand::\nModelReady", color="#3fb950"]
+    Prewarm     -> Error       [label="pre_warm()\ntimeout/err", color="#f85149"]
+    ActorThink  -> CriticThink [label="AppCommand::TurnDone\n{role: Actor}", color="#e3b341"]
+    CriticThink -> ActorThink  [label="AppCommand::TurnDone\n{role: Critic}\niteration += 1", color="#3fb950"]
+    ActorThink  -> Paused      [label="Space key\n(pending_pause=true\nthen TurnDone)", color="#bc8cff"]
+    CriticThink -> Paused      [label="Space key\n(pending_pause=true\nthen TurnDone)", color="#bc8cff"]
+    Paused      -> ActorThink  [label="Space key\n(resume)", color="#3fb950"]
+    Paused      -> Idle        [label="'e' key\n(edit prompt)", color="#58a6ff"]
+    Error       -> Idle        [label="'e' key\n(edit prompt)", color="#58a6ff"]
+    ActorThink  -> Error       [label="HTTP error /\nOllama timeout", color="#f85149"]
+    CriticThink -> Error       [label="HTTP error /\nOllama timeout", color="#f85149"]
+
+    { rank=same; ActorThink; CriticThink }
+}
