@@ -17,11 +17,12 @@ fn get_client() -> &'static Client {
 
 #[derive(Serialize)]
 struct GenerateReq {
-    model:   String,
-    prompt:  String,
-    system:  String,
-    stream:  bool,
-    options: Opts,
+    model:      String,
+    prompt:     String,
+    system:     String,
+    stream:     bool,
+    keep_alive: i64,
+    options:    Opts,
 }
 
 #[derive(Serialize)]
@@ -30,22 +31,55 @@ struct Opts {
 }
 
 pub async fn pre_warm(tx: mpsc::Sender<AppCommand>, cfg: Arc<Config>) {
-    let body = GenerateReq {
-        model:   cfg.actor_model.clone(),
-        prompt:  "ready".into(),
-        system:  "You are a helpful assistant.".into(),
-        stream:  false,
-        options: Opts { temperature: 0.1 },
+    let warm_actor = async {
+        get_client()
+            .post(format!("{}/api/generate", cfg.actor_url()))
+            .json(&GenerateReq {
+                model:      cfg.actor_model.clone(),
+                prompt:     "ready".into(),
+                system:     "You are a helpful assistant.".into(),
+                stream:     false,
+                keep_alive: -1,
+                options:    Opts { temperature: 0.1 },
+            })
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
     };
-    let result = get_client()
-        .post(format!("{}/api/generate", cfg.ollama_url))
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await;
-    match result {
-        Ok(_) => { let _ = tx.send(AppCommand::ModelReady).await; }
-        Err(e) => { let _ = tx.send(AppCommand::LoopError(format!("pre-warm failed: {e}"))).await; }
+
+    let actor_eq_critic = cfg.actor_model == cfg.critic_model
+        && cfg.actor_url() == cfg.critic_url();
+
+    if actor_eq_critic {
+        match warm_actor.await {
+            Ok(_)  => { let _ = tx.send(AppCommand::ModelReady).await; }
+            Err(e) => { let _ = tx.send(AppCommand::LoopError(format!("pre-warm failed: {e}"))).await; }
+        }
+        return;
+    }
+
+    let warm_critic = async {
+        get_client()
+            .post(format!("{}/api/generate", cfg.critic_url()))
+            .json(&GenerateReq {
+                model:      cfg.critic_model.clone(),
+                prompt:     "ready".into(),
+                system:     "You are a helpful assistant.".into(),
+                stream:     false,
+                keep_alive: -1,
+                options:    Opts { temperature: 0.1 },
+            })
+            .timeout(std::time::Duration::from_secs(120))
+            .send()
+            .await
+    };
+
+    let (ra, rc) = tokio::join!(warm_actor, warm_critic);
+    match (ra, rc) {
+        (Ok(_), Ok(_)) => { let _ = tx.send(AppCommand::ModelReady).await; }
+        (Err(e), _) | (_, Err(e)) => {
+            let _ = tx.send(AppCommand::LoopError(format!("pre-warm failed: {e}"))).await;
+        }
     }
 }
 
@@ -114,20 +148,21 @@ async fn do_stream(
     temperature: f32,
     cfg:         Arc<Config>,
 ) -> Result<()> {
-    let model = match role {
-        Role::Actor  => cfg.actor_model.clone(),
-        Role::Critic => cfg.critic_model.clone(),
+    let (model, url) = match role {
+        Role::Actor  => (cfg.actor_model.clone(),  cfg.actor_url().to_string()),
+        Role::Critic => (cfg.critic_model.clone(), cfg.critic_url().to_string()),
     };
     let body = GenerateReq {
         model,
         prompt,
-        system: system.into(),
-        stream: true,
-        options: Opts { temperature },
+        system:     system.into(),
+        stream:     true,
+        keep_alive: -1,
+        options:    Opts { temperature },
     };
 
     let mut resp = get_client()
-        .post(format!("{}/api/generate", cfg.ollama_url))
+        .post(format!("{url}/api/generate"))
         .json(&body)
         .timeout(std::time::Duration::from_secs(300))
         .send()

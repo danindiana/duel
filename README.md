@@ -277,6 +277,8 @@ Press **`s`** at any time to save the full session to `duel-session-{timestamp}.
 | `--critic-mode <mode>` | `default` | Critic archetype (see below) |
 | `--actor-system <file>` | built-in | Load Actor system prompt from a text file |
 | `--critic-system <file>` | built-in | Load Critic system prompt from a text file |
+| `--actor-ollama-url <url>` | `--ollama-url` | Ollama URL for Actor (for per-GPU pinning) |
+| `--critic-ollama-url <url>` | `--ollama-url` | Ollama URL for Critic (for per-GPU pinning) |
 
 ### Config file
 
@@ -331,6 +333,21 @@ The built-in system prompts are defined in `src/config.rs` as string constants. 
 - **CPU-only:** Ollama falls back to CPU automatically when no GPU is available; expect 5–20× slower generation but otherwise fully functional
 
 The title bar shows live GPU utilisation and VRAM usage via `nvidia-smi`. On AMD or CPU-only machines the meter shows `[GPU:--]` and everything else continues normally.
+
+### Dual-GPU model pinning
+
+Run two Ollama instances, each bound to one GPU, then point each role at its own instance:
+
+```bash
+# In two separate terminals (or systemd instances):
+CUDA_VISIBLE_DEVICES=0 OLLAMA_HOST=127.0.0.1:11434 ollama serve
+CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=127.0.0.1:11435 ollama serve
+
+duel --actor devstral:24b    --actor-ollama-url  http://127.0.0.1:11434 \
+     --critic deepseek-r1:14b --critic-ollama-url http://127.0.0.1:11435
+```
+
+Both models are loaded with `keep_alive: -1` (indefinite VRAM residency) and warmed concurrently at startup, so every iteration runs from hot weights with no reload latency.
 
 ---
 

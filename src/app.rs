@@ -184,7 +184,13 @@ impl App {
         self.pending_pause = false;
         self.session_path = None;
         self.state = LoopState::Prewarm;
-        self.status = "Warming model…".into();
+        self.status = if self.cfg.actor_model == self.cfg.critic_model
+            && self.cfg.actor_url() == self.cfg.critic_url()
+        {
+            "Warming model…".into()
+        } else {
+            format!("Warming {} + {}…", self.cfg.actor_model, self.cfg.critic_model)
+        };
         let tx = self.tx.clone();
         let cfg = Arc::clone(&self.cfg);
         tokio::spawn(crate::ollama::pre_warm(tx, cfg));

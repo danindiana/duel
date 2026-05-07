@@ -96,6 +96,9 @@ pub struct Config {
     pub actor_system:  Option<String>,
     /// Custom critic system prompt (overrides critic_mode selection).
     pub critic_system: Option<String>,
+    /// Per-role Ollama URL overrides. Falls back to `ollama_url` when None.
+    pub actor_ollama_url:  Option<String>,
+    pub critic_ollama_url: Option<String>,
 }
 
 impl Default for Config {
@@ -110,11 +113,21 @@ impl Default for Config {
             critic_mode:   CriticMode::Default,
             actor_system:  None,
             critic_system: None,
+            actor_ollama_url:  None,
+            critic_ollama_url: None,
         }
     }
 }
 
 impl Config {
+    pub fn actor_url(&self) -> &str {
+        self.actor_ollama_url.as_deref().unwrap_or(&self.ollama_url)
+    }
+
+    pub fn critic_url(&self) -> &str {
+        self.critic_ollama_url.as_deref().unwrap_or(&self.ollama_url)
+    }
+
     pub fn actor_system_prompt(&self) -> &str {
         self.actor_system.as_deref().unwrap_or(DEFAULT_ACTOR)
     }
@@ -154,9 +167,11 @@ Options:
   --context-turns <n>     Recent turns included in context    [default: 4]
   --max-history <n>       Cap history at N entries (oldest trimmed)
   --critic-mode <mode>    Critic archetype: default | adversarial | socratic | peer | redteam
-  --actor-system <file>   Load Actor system prompt from a text file
-  --critic-system <file>  Load Critic system prompt from a text file
-  --help, -h              Show this help
+  --actor-system <file>      Load Actor system prompt from a text file
+  --critic-system <file>     Load Critic system prompt from a text file
+  --actor-ollama-url <url>   Ollama URL for Actor  [default: --ollama-url]
+  --critic-ollama-url <url>  Ollama URL for Critic [default: --ollama-url]
+  --help, -h                 Show this help
 
 Subcommands:
   resume <file>           Continue a saved JSON session from where it left off
@@ -184,8 +199,10 @@ struct TomlConfig {
     context_turns: Option<usize>,
     max_history:   Option<usize>,
     critic_mode:   Option<String>,
-    actor_system:  Option<String>,
-    critic_system: Option<String>,
+    actor_system:      Option<String>,
+    critic_system:     Option<String>,
+    actor_ollama_url:  Option<String>,
+    critic_ollama_url: Option<String>,
 }
 
 fn load_toml_file() -> Option<TomlConfig> {
@@ -203,8 +220,10 @@ fn apply_toml(cfg: &mut Config, t: TomlConfig) {
     if let Some(v) = t.context_turns { cfg.context_turns = v; }
     if let Some(v) = t.max_history   { cfg.max_history   = Some(v); }
     if let Some(v) = t.critic_mode   { cfg.critic_mode   = CriticMode::from_str(&v); }
-    if let Some(v) = t.actor_system  { cfg.actor_system  = Some(v); }
-    if let Some(v) = t.critic_system { cfg.critic_system = Some(v); }
+    if let Some(v) = t.actor_system      { cfg.actor_system      = Some(v); }
+    if let Some(v) = t.critic_system     { cfg.critic_system     = Some(v); }
+    if let Some(v) = t.actor_ollama_url  { cfg.actor_ollama_url  = Some(v); }
+    if let Some(v) = t.critic_ollama_url { cfg.critic_ollama_url = Some(v); }
 }
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
@@ -259,6 +278,12 @@ fn apply_cli_args(cfg: &mut Config) -> Option<()> {
                         Err(e) => eprintln!("Warning: --critic-system: {e}"),
                     }
                 }
+            }
+            "--actor-ollama-url" => {
+                if let Some(v) = it.next() { cfg.actor_ollama_url = Some(v.clone()); }
+            }
+            "--critic-ollama-url" => {
+                if let Some(v) = it.next() { cfg.critic_ollama_url = Some(v.clone()); }
             }
             _ => {}
         }
