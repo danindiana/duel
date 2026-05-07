@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **Per-role GPU pinning** — `--actor-ollama-url` and `--critic-ollama-url` flags (and matching TOML keys) route each role to a dedicated Ollama instance; enables true GPU affinity on dual-GPU machines via `CUDA_VISIBLE_DEVICES`
+- **Indefinite VRAM residency** — all requests now send `keep_alive: -1` so models stay loaded between turns with no reload latency
+- **Dual concurrent pre-warm** — when Actor and Critic use different models or URLs, both are warmed simultaneously via `tokio::join!` at startup; pre-warm timeout raised from 20 s to 120 s for large models
 - **Config file** — `~/.config/duel/config.toml` for persistent settings; CLI args override file values
 - **Critic archetypes** — `--critic-mode` flag selects from `default`, `adversarial`, `socratic`, `peer`, `redteam`
 - **Custom system prompts** — `--actor-system <file>` and `--critic-system <file>` load prompts from text files
