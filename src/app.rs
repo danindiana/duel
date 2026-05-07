@@ -127,6 +127,13 @@ impl App {
                         }
                     }
                 }
+                // Trim history when max_history cap is reached (keep newest entries)
+                if let Some(cap) = self.cfg.max_history {
+                    if self.history.len() > cap {
+                        let excess = self.history.len() - cap;
+                        self.history.drain(..excess);
+                    }
+                }
                 if self.pending_pause {
                     self.pending_pause = false;
                     self.state = LoopState::Paused;
@@ -186,9 +193,21 @@ impl App {
     pub fn toggle_pause(&mut self) {
         match &self.state {
             LoopState::Paused => {
-                self.state = LoopState::ActorThink;
                 self.status = "Resuming…".into();
-                self.spawn_actor();
+                // Resume from the right side of the pair based on what the last turn was.
+                // Also fix the iteration counter when resuming after a completed Critic turn
+                // (pending_pause skips the normal iteration increment).
+                match self.history.last().map(|t| t.role) {
+                    Some(Role::Actor) => {
+                        self.state = LoopState::CriticThink;
+                        self.spawn_critic();
+                    }
+                    _ => {
+                        self.iteration += 1;
+                        self.state = LoopState::ActorThink;
+                        self.spawn_actor();
+                    }
+                }
             }
             LoopState::ActorThink | LoopState::CriticThink => {
                 self.pending_pause = true;
@@ -283,10 +302,123 @@ impl App {
         }
     }
 
+    pub fn export_html(&mut self) {
+        if self.history.is_empty() { return; }
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H%M%S%.3f").to_string();
+        let fname = format!("duel-session-{ts}.html");
+        let path = self.project_dir.join(&fname);
+
+        fn esc(s: &str) -> String {
+            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        }
+
+        let mut turns_html = String::new();
+        for turn in &self.history {
+            let (cls, label) = match turn.role {
+                Role::Actor  => ("actor",  format!("Iteration {} — ACTOR", turn.iteration)),
+                Role::Critic => {
+                    let sc = turn.score.map(|s| format!(" <span class=\"score\">(Score: {s}/10)</span>")).unwrap_or_default();
+                    ("critic", format!("Iteration {} — CRITIC{}", turn.iteration, sc))
+                }
+            };
+            turns_html.push_str(&format!(
+                "<div class=\"turn {cls}\">\n\
+                 <div class=\"turn-header\">{label}</div>\n\
+                 <pre>{}</pre>\n\
+                 </div>\n",
+                esc(&turn.content)
+            ));
+        }
+
+        let html = format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>duel — {}</title>
+<style>
+  body{{background:#1e1e2e;color:#cdd6f4;font-family:monospace;max-width:920px;margin:0 auto;padding:2rem;line-height:1.5}}
+  h1{{color:#cba6f7;border-bottom:1px solid #45475a;padding-bottom:.5rem;margin-bottom:.5rem}}
+  .meta{{color:#6c7086;font-size:.85em;margin-bottom:2rem}}
+  .turn{{margin:1.5rem 0}}
+  .turn-header{{font-weight:bold;margin-bottom:.4rem}}
+  .actor .turn-header{{color:#89b4fa}}
+  .critic .turn-header{{color:#f38ba8}}
+  .score{{color:#a6e3a1}}
+  pre{{white-space:pre-wrap;word-break:break-word;background:#313244;padding:1rem;border-radius:.4rem;margin:0}}
+</style>
+</head>
+<body>
+<h1>duel session</h1>
+<div class="meta">
+  <div>Prompt: {}</div>
+  <div>Actor: {} &nbsp;|&nbsp; Critic: {}</div>
+  <div>Exported: {}</div>
+</div>
+{}
+</body>
+</html>
+"#,
+            esc(&self.prompt),
+            esc(&self.prompt),
+            esc(&self.cfg.actor_model),
+            esc(&self.cfg.critic_model),
+            ts,
+            turns_html,
+        );
+
+        match std::fs::write(&path, html) {
+            Ok(_)  => { self.session_path = Some(path); self.status = format!("Exported: {fname}"); }
+            Err(e) => { self.status = format!("HTML export failed: {e}"); }
+        }
+    }
+
+    /// Load a saved JSON session. Returns an error string on failure.
+    pub fn resume_session(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        let data = std::fs::read_to_string(path)?;
+        let doc: serde_json::Value = serde_json::from_str(&data)?;
+
+        let prompt = doc["prompt"].as_str().unwrap_or("").to_string();
+        if prompt.is_empty() {
+            return Err(anyhow::anyhow!("session file has no prompt"));
+        }
+
+        let turns_val = doc["turns"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("session file has no turns array"))?;
+
+        let mut history = Vec::with_capacity(turns_val.len());
+        for t in turns_val {
+            let role = match t["role"].as_str().unwrap_or("") {
+                "actor"  => Role::Actor,
+                "critic" => Role::Critic,
+                other    => return Err(anyhow::anyhow!("unknown role: {other}")),
+            };
+            history.push(Turn {
+                role,
+                content:     t["content"].as_str().unwrap_or("").to_string(),
+                iteration:   t["iteration"].as_u64().unwrap_or(1) as usize,
+                eval_count:  t["eval_count"].as_u64().unwrap_or(0) as u32,
+                duration_ms: t["duration_ms"].as_u64().unwrap_or(0),
+                score:       t["score"].as_u64().map(|n| n as u8),
+            });
+        }
+
+        let last_iter = history.last().map(|t| t.iteration).unwrap_or(1);
+        self.history      = history;
+        self.prompt       = prompt;
+        self.iteration    = last_iter;
+        self.scroll       = 0;
+        self.session_path = Some(path.to_path_buf());
+        self.state        = LoopState::Paused;
+        let fname = path.file_name().unwrap_or_default().to_string_lossy();
+        self.status = format!("Resumed from {fname} — Space to continue, e to edit");
+        Ok(())
+    }
+
     pub fn scroll_up(&mut self)   { self.scroll = self.scroll.saturating_sub(1); }
     pub fn scroll_down(&mut self) { self.scroll = self.scroll.saturating_add(1); }
 
     fn spawn_actor(&self) {
+        self.warn_context_window();
         let tx      = self.tx.clone();
         let prompt  = self.prompt.clone();
         let history = self.history.clone();
@@ -296,11 +428,28 @@ impl App {
     }
 
     fn spawn_critic(&self) {
+        self.warn_context_window();
         let tx      = self.tx.clone();
         let history = self.history.clone();
         let iter    = self.iteration;
         let cfg     = Arc::clone(&self.cfg);
         tokio::spawn(crate::ollama::run_critic(tx, history, iter, cfg));
+    }
+
+    fn warn_context_window(&self) {
+        // Estimate context size from recent turns' content length (~4 chars/token).
+        const WARN_TOKENS: usize = 28_000;
+        let estimated: usize = self.history.iter().rev()
+            .take(self.cfg.context_turns)
+            .map(|t| t.content.len() / 4)
+            .sum();
+        if estimated > WARN_TOKENS {
+            let tx = self.tx.clone();
+            let msg = format!(
+                "⚠ Context ~{estimated}tok (>{WARN_TOKENS}): consider reducing --context-turns"
+            );
+            tokio::spawn(async move { let _ = tx.send(crate::app::AppCommand::StatusMsg(msg)).await; });
+        }
     }
 }
 

@@ -15,7 +15,7 @@
 
 **duel** is a terminal UI that pits two AI agents against each other in an infinite self-improvement loop. The **Actor** generates a response to your prompt. The **Critic** tears it apart and scores it. The Actor incorporates that feedback and tries again. The loop runs until you pause it — or leave it running overnight.
 
-Both agents are the same `qwen3.5:4b` model served by Ollama, differentiated only by system prompts. Tokens stream into each panel in real time. The Critic's score (`Score: X/10`) is parsed and colour-coded in the panel header. Every completed turn is saved in a scrollable history.
+Actor and Critic are Ollama models (default: `qwen3.5:4b` for both) differentiated by system prompts. You can run different models for each role, pick a Critic archetype, or supply fully custom system prompts. Tokens stream into each panel in real time. The Critic's score (`Score: X/10`) is parsed and colour-coded in the panel header. Every completed turn is saved in a scrollable history.
 
 ---
 
@@ -199,7 +199,10 @@ sudo cp target/release/duel /usr/local/bin/duel
 ### Run
 
 ```bash
-duel
+duel                                          # default settings
+duel --actor devstral:24b --critic deepseek-r1:14b
+duel --stop-at-score 9 --critic-mode adversarial
+duel resume duel-session-2026-05-07T160030.json   # continue a saved session
 ```
 
 Type your prompt and press **Enter** to start the loop. The model warms up on the first run (a few seconds), then the Actor/Critic cycle begins.
@@ -216,6 +219,8 @@ Type your prompt and press **Enter** to start the loop. The model warms up on th
 | `Space` | Paused | Resume loop |
 | `e` | Paused / Error | Return to prompt editor |
 | `s` | Any (non-Idle) | Save session to JSON |
+| `m` | Any (non-Idle) | Export session to Markdown |
+| `h` | Any (non-Idle) | Export session to HTML |
 | `↑` / `k` | Any | Scroll history up |
 | `↓` / `j` | Any | Scroll history down |
 | `Ctrl+T` | Any | Cycle theme (5 themes) |
@@ -231,8 +236,9 @@ Press **`s`** at any time to save the full session to `duel-session-{timestamp}.
 ```json
 {
   "prompt": "Write a merge sort in Rust",
-  "model": "qwen3.5:4b",
-  "saved_at": "2026-05-07T160030",
+  "actor_model": "qwen3.5:4b",
+  "critic_model": "qwen3.5:4b",
+  "saved_at": "2026-05-07T160030.123",
   "turns": [
     {
       "iteration": 1,
@@ -258,15 +264,51 @@ Press **`s`** at any time to save the full session to `duel-session-{timestamp}.
 
 ## Configuration
 
-System prompts and inference parameters are constants in `src/ollama.rs`:
+### CLI flags
 
-| Constant | Default | Notes |
-|----------|---------|-------|
-| `MODEL` | `qwen3.5:4b` | Any Ollama model works — larger = slower but higher quality |
-| `CONTEXT_TURNS` | `4` | Last N turns kept in prompt; raise for longer memory, lower for speed |
-| Actor `temperature` | `0.7` | Higher = more creative variation between iterations |
-| Critic `temperature` | `0.4` | Lower = more consistent, precise evaluation |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | Change if Ollama is on a different host/port |
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--actor <model>` | `qwen3.5:4b` | Ollama model for the Actor role |
+| `--critic <model>` | `qwen3.5:4b` | Ollama model for the Critic role |
+| `--ollama-url <url>` | `http://127.0.0.1:11434` | Ollama API base URL |
+| `--stop-at-score <n>` | off | Auto-pause when Critic scores ≥ n (1–10) |
+| `--context-turns <n>` | `4` | Recent turns passed as context |
+| `--max-history <n>` | unlimited | Cap history entries; oldest trimmed |
+| `--critic-mode <mode>` | `default` | Critic archetype (see below) |
+| `--actor-system <file>` | built-in | Load Actor system prompt from a text file |
+| `--critic-system <file>` | built-in | Load Critic system prompt from a text file |
+
+### Config file
+
+Copy `example-config.toml` to `~/.config/duel/config.toml`. CLI flags override file values.
+
+```toml
+actor_model  = "devstral:24b"
+critic_model = "deepseek-r1:14b"
+stop_at_score = 9
+critic_mode  = "peer"
+```
+
+### Critic archetypes (`--critic-mode`)
+
+| Mode | Behaviour |
+|------|-----------|
+| `default` | Identifies weaknesses, gives 2-3 improvement suggestions, scores |
+| `adversarial` | Challenges every assumption; relentlessly finds exploitable weak points |
+| `socratic` | Asks 2-3 probing questions instead of giving direct feedback |
+| `peer` | Collegial review — acknowledges strengths before suggesting improvements |
+| `redteam` | Looks for security vulnerabilities, failure modes, and misuse vectors |
+
+### System prompts
+
+The built-in system prompts are defined in `src/config.rs` as string constants. Use `--actor-system <file>` or `--critic-system <file>` to supply a custom prompt at runtime, or set `actor_system` / `critic_system` inline in `~/.config/duel/config.toml`.
+
+### Temperatures (hardcoded)
+
+| Role | Temperature | Rationale |
+|------|-------------|-----------|
+| Actor | 0.7 | Higher creative variation across iterations |
+| Critic | 0.4 | Consistent, precise evaluation |
 
 ### Recommended models
 
@@ -281,12 +323,14 @@ System prompts and inference parameters are constants in `src/ollama.rs`:
 
 ## GPU requirements
 
-`duel` itself requires no GPU — it is a thin HTTP client over Ollama. GPU acceleration comes from Ollama's tensor-parallel inference:
+`duel` itself requires no GPU — it is a thin HTTP client over Ollama. GPU acceleration comes from Ollama's inference backend:
 
-- **Single GPU:** any model that fits in VRAM works
-- **Dual GPU (tensor split):** enable with `CUDA_VISIBLE_DEVICES=0,1` in the Ollama service override; combined VRAM budget allows larger models (see [this session doc](docs/))
+- **NVIDIA CUDA (single GPU):** any model that fits in VRAM works out of the box
+- **NVIDIA CUDA (dual GPU / tensor split):** set `CUDA_VISIBLE_DEVICES=0,1` in the Ollama systemd override; combined VRAM allows larger models
+- **AMD ROCm:** build Ollama with ROCm support (`--build-arg=OLLAMA_SKIP_CUDA_GENERATE=1`); `duel` works without changes — the HTTP API is identical
+- **CPU-only:** Ollama falls back to CPU automatically when no GPU is available; expect 5–20× slower generation but otherwise fully functional
 
-The title bar shows live GPU utilisation and VRAM usage via `nvidia-smi`. If `nvidia-smi` is not available the meter shows `[GPU:--]` and everything else continues normally.
+The title bar shows live GPU utilisation and VRAM usage via `nvidia-smi`. On AMD or CPU-only machines the meter shows `[GPU:--]` and everything else continues normally.
 
 ---
 
@@ -295,9 +339,13 @@ The title bar shows live GPU utilisation and VRAM usage via `nvidia-smi`. If `nv
 ```
 duel/
 ├── Cargo.toml
+├── example-config.toml       # copy to ~/.config/duel/config.toml
+├── CHANGELOG.md
+├── CONTRIBUTING.md
 ├── src/
-│   ├── main.rs          # entry point, event loop
-│   ├── app.rs           # state machine, AppCommand
+│   ├── main.rs          # entry point, event loop, key bindings
+│   ├── app.rs           # state machine, AppCommand, exports, resume
+│   ├── config.rs        # Config, CriticMode, CLI + TOML parsing
 │   ├── ollama.rs        # streaming HTTP client
 │   ├── ui.rs            # Ratatui rendering, themes
 │   ├── gpu.rs           # nvidia-smi poller

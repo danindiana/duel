@@ -1,0 +1,30 @@
+# duel configuration file
+# Copy to ~/.config/duel/config.toml
+# CLI flags override values set here.
+
+# Models to use for each role (must be pulled in Ollama)
+actor_model  = "qwen3.5:4b"
+critic_model = "qwen3.5:4b"
+
+# Use different models for Actor and Critic:
+# actor_model  = "devstral:24b"
+# critic_model = "deepseek-r1:14b"
+
+# Ollama API endpoint
+ollama_url = "http://127.0.0.1:11434"
+
+# Auto-pause when Critic score reaches this value (1–10)
+# stop_at_score = 9
+
+# Number of recent turns passed as context (reduce to save VRAM)
+context_turns = 4
+
+# Cap total history entries (oldest trimmed when exceeded)
+# max_history = 500
+
+# Critic archetype: default | adversarial | socratic | peer | redteam
+critic_mode = "default"
+
+# Inline custom system prompts (overrides critic_mode for critic)
+# actor_system  = "You are a specialist in systems programming. ..."
+# critic_system = "You are a security auditor. ..."

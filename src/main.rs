@@ -54,6 +54,25 @@ async fn main() -> Result<()> {
 
     let mut app = App::new(tx, project_dir, cfg);
 
+    // Handle `duel resume <path>` subcommand
+    {
+        let raw: Vec<String> = std::env::args().collect();
+        if raw.get(1).map(|s| s.as_str()) == Some("resume") {
+            match raw.get(2) {
+                Some(path) => {
+                    if let Err(e) = app.resume_session(std::path::Path::new(path)) {
+                        app.state = app::LoopState::Error(e.to_string());
+                        app.status = format!("Resume failed: {e}");
+                    }
+                }
+                None => {
+                    app.state = app::LoopState::Error("resume requires a session file path".into());
+                    app.status = "Usage: duel resume <session.json>".into();
+                }
+            }
+        }
+    }
+
     let result = run_app(&mut terminal, &mut app, rx).await;
 
     disable_raw_mode()?;
@@ -124,6 +143,11 @@ async fn run_app(
                     // ── Markdown export ────────────────────────────────────
                     (_, _, KeyCode::Char('m')) if !matches!(app.state, LoopState::Idle) => {
                         app.export_markdown();
+                    }
+
+                    // ── HTML export ────────────────────────────────────────
+                    (_, _, KeyCode::Char('h')) if !matches!(app.state, LoopState::Idle) => {
+                        app.export_html();
                     }
 
                     // ── History scroll ─────────────────────────────────────

@@ -14,15 +14,6 @@ fn get_client() -> &'static Client {
     CLIENT.get_or_init(Client::new)
 }
 
-const ACTOR_SYSTEM: &str = "\
-You are the Actor. Your job is to generate the best possible response to the user's task. \
-Be thorough, precise, and creative. In later iterations, incorporate the Critic's feedback \
-to improve your output.";
-
-const CRITIC_SYSTEM: &str = "\
-You are the Critic. Evaluate the Actor's latest response. Identify specific weaknesses, \
-errors, or missed opportunities. Provide 2-3 concrete, actionable improvement suggestions. \
-End with a score in the format \"Score: X/10\" and one sentence explaining the score.";
 
 #[derive(Serialize)]
 struct GenerateReq {
@@ -77,7 +68,8 @@ pub async fn run_actor(
         )
     };
 
-    stream_turn(tx, Role::Actor, ACTOR_SYSTEM, body, 0.7, cfg).await;
+    let actor_sys = cfg.actor_system_prompt().to_string();
+    stream_turn(tx, Role::Actor, &actor_sys, body, 0.7, cfg).await;
 }
 
 pub async fn run_critic(
@@ -97,7 +89,8 @@ pub async fn run_critic(
         actor_turn.content
     );
 
-    stream_turn(tx, Role::Critic, CRITIC_SYSTEM, body, 0.4, cfg).await;
+    let critic_sys = cfg.critic_system_prompt().to_string();
+    stream_turn(tx, Role::Critic, &critic_sys, body, 0.4, cfg).await;
 }
 
 async fn stream_turn(
