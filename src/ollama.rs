@@ -1,14 +1,18 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde::Serialize;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::app::{AppCommand, Role, Turn};
+use crate::config::Config;
 
-const OLLAMA_URL: &str = "http://127.0.0.1:11434";
-const MODEL: &str = "qwen3.5:4b";
-// Keep last N turns in context to avoid overflowing 32k context window
-const CONTEXT_TURNS: usize = 4;
+static CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn get_client() -> &'static Client {
+    CLIENT.get_or_init(Client::new)
+}
 
 const ACTOR_SYSTEM: &str = "\
 You are the Actor. Your job is to generate the best possible response to the user's task. \
@@ -21,11 +25,11 @@ errors, or missed opportunities. Provide 2-3 concrete, actionable improvement su
 End with a score in the format \"Score: X/10\" and one sentence explaining the score.";
 
 #[derive(Serialize)]
-struct GenerateReq<'a> {
-    model:  &'a str,
-    prompt: String,
-    system: &'a str,
-    stream: bool,
+struct GenerateReq {
+    model:   String,
+    prompt:  String,
+    system:  String,
+    stream:  bool,
     options: Opts,
 }
 
@@ -34,17 +38,16 @@ struct Opts {
     temperature: f32,
 }
 
-pub async fn pre_warm(tx: mpsc::Sender<AppCommand>) {
-    let client = Client::new();
+pub async fn pre_warm(tx: mpsc::Sender<AppCommand>, cfg: Arc<Config>) {
     let body = GenerateReq {
-        model:   MODEL,
+        model:   cfg.actor_model.clone(),
         prompt:  "ready".into(),
-        system:  "You are a helpful assistant.",
+        system:  "You are a helpful assistant.".into(),
         stream:  false,
         options: Opts { temperature: 0.1 },
     };
-    let result = client
-        .post(format!("{OLLAMA_URL}/api/generate"))
+    let result = get_client()
+        .post(format!("{}/api/generate", cfg.ollama_url))
         .json(&body)
         .timeout(std::time::Duration::from_secs(20))
         .send()
@@ -60,8 +63,9 @@ pub async fn run_actor(
     prompt:  String,
     history: Vec<Turn>,
     iter:    usize,
+    cfg:     Arc<Config>,
 ) {
-    let recent: Vec<&Turn> = history.iter().rev().take(CONTEXT_TURNS).collect();
+    let recent: Vec<&Turn> = history.iter().rev().take(cfg.context_turns).collect();
     let last_critic = recent.iter().find(|t| t.role == Role::Critic);
 
     let body = if iter == 1 || last_critic.is_none() {
@@ -73,13 +77,14 @@ pub async fn run_actor(
         )
     };
 
-    stream_turn(tx, Role::Actor, ACTOR_SYSTEM, body, 0.7).await;
+    stream_turn(tx, Role::Actor, ACTOR_SYSTEM, body, 0.7, cfg).await;
 }
 
 pub async fn run_critic(
     tx:      mpsc::Sender<AppCommand>,
     history: Vec<Turn>,
     iter:    usize,
+    cfg:     Arc<Config>,
 ) {
     let last_actor = history.iter().rev().find(|t| t.role == Role::Actor);
     let Some(actor_turn) = last_actor else {
@@ -92,7 +97,7 @@ pub async fn run_critic(
         actor_turn.content
     );
 
-    stream_turn(tx, Role::Critic, CRITIC_SYSTEM, body, 0.4).await;
+    stream_turn(tx, Role::Critic, CRITIC_SYSTEM, body, 0.4, cfg).await;
 }
 
 async fn stream_turn(
@@ -101,8 +106,9 @@ async fn stream_turn(
     system:      &str,
     prompt:      String,
     temperature: f32,
+    cfg:         Arc<Config>,
 ) {
-    if let Err(e) = do_stream(tx.clone(), role, system, prompt, temperature).await {
+    if let Err(e) = do_stream(tx.clone(), role, system, prompt, temperature, cfg).await {
         let _ = tx.send(AppCommand::LoopError(e.to_string())).await;
     }
 }
@@ -113,18 +119,22 @@ async fn do_stream(
     system:      &str,
     prompt:      String,
     temperature: f32,
+    cfg:         Arc<Config>,
 ) -> Result<()> {
-    let client = Client::new();
+    let model = match role {
+        Role::Actor  => cfg.actor_model.clone(),
+        Role::Critic => cfg.critic_model.clone(),
+    };
     let body = GenerateReq {
-        model: MODEL,
+        model,
         prompt,
-        system,
+        system: system.into(),
         stream: true,
         options: Opts { temperature },
     };
 
-    let mut resp = client
-        .post(format!("{OLLAMA_URL}/api/generate"))
+    let mut resp = get_client()
+        .post(format!("{}/api/generate", cfg.ollama_url))
         .json(&body)
         .timeout(std::time::Duration::from_secs(300))
         .send()
@@ -135,7 +145,12 @@ async fn do_stream(
     let mut eval_dur_ns = 0u64;
 
     loop {
-        let chunk = resp.chunk().await?;
+        let chunk = timeout(
+            std::time::Duration::from_secs(60),
+            resp.chunk(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("streaming timeout: no chunk for 60s"))??;
         let Some(bytes) = chunk else { break; };
         buf.extend_from_slice(&bytes);
 

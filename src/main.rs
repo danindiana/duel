@@ -1,17 +1,19 @@
 mod app;
+mod config;
 mod gpu;
 mod ollama;
 mod ui;
 mod util;
 
 use anyhow::Result;
+use config::Config;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io, path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
 use app::{App, AppCommand, LoopState};
@@ -21,6 +23,11 @@ const CHANNEL_CAPACITY: usize = 256;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cfg = match Config::from_args() {
+        Some(c) => Arc::new(c),
+        None => { print!("{}", Config::help_text()); return Ok(()); }
+    };
+
     let project_dir = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."));
 
@@ -45,7 +52,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(gpu::poll_loop(tx.clone()));
 
-    let mut app = App::new(tx, project_dir);
+    let mut app = App::new(tx, project_dir, cfg);
 
     let result = run_app(&mut terminal, &mut app, rx).await;
 
@@ -112,6 +119,11 @@ async fn run_app(
                     // ── Save session ───────────────────────────────────────
                     (_, _, KeyCode::Char('s')) if !matches!(app.state, LoopState::Idle) => {
                         app.save_session();
+                    }
+
+                    // ── Markdown export ────────────────────────────────────
+                    (_, _, KeyCode::Char('m')) if !matches!(app.state, LoopState::Idle) => {
+                        app.export_markdown();
                     }
 
                     // ── History scroll ─────────────────────────────────────

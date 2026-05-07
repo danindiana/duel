@@ -136,7 +136,8 @@ fn draw_prompt(f: &mut Frame, area: Rect, app: &App, tc: ThemeColors) {
 
     // Title
     let title = format!(
-        "  duel  ·  qwen3.5:4b  ·  {}",
+        "  duel  ·  {}  ·  {}",
+        app.cfg.actor_model,
         THEME_NAMES[app.theme_idx % NUM_THEMES]
     );
     f.render_widget(
@@ -231,7 +232,7 @@ fn draw_title_bar(f: &mut Frame, area: Rect, app: &App, tc: ThemeColors) {
         format!("  iter {}", app.iteration)
     };
     let theme_name = THEME_NAMES[app.theme_idx % NUM_THEMES];
-    let text = format!("  duel  ·  qwen3.5:4b{iter_str}  ·  {gpu_str}  [{theme_name}]");
+    let text = format!("  duel  ·  {}{iter_str}  ·  {gpu_str}  [{theme_name}]", app.cfg.actor_model);
 
     // Render base title then overlay badge
     f.render_widget(
@@ -396,9 +397,9 @@ fn draw_history(f: &mut Frame, area: Rect, app: &App, tc: ThemeColors) {
 fn draw_status_bar(f: &mut Frame, area: Rect, app: &App, tc: ThemeColors) {
     let hint = match &app.state {
         LoopState::Idle => "Enter:start  Backspace:del  Ctrl+T:theme  ?:help  q:quit",
-        LoopState::Paused => "Space:resume  e:edit-prompt  s:save  ↑↓:history  Ctrl+T  ?:help  q",
+        LoopState::Paused => "Space:resume  e:edit-prompt  s:save  m:md  ↑↓:history  Ctrl+T  ?:help  q",
         LoopState::Error(_) => "e:edit-prompt  q:quit",
-        _ => "Space:pause  s:save  ↑↓:history  Ctrl+T:theme  ?:help  q:quit",
+        _ => "Space:pause  s:save  m:md  ↑↓:history  Ctrl+T:theme  ?:help  q:quit",
     };
     let status = if app.status.is_empty() {
         String::new()
@@ -420,6 +421,7 @@ fn draw_help(f: &mut Frame, area: Rect, tc: ThemeColors) {
         ("Space",        "Pause / resume loop"),
         ("e",            "Edit prompt (when paused)"),
         ("s",            "Save session to JSON"),
+        ("m",            "Export session to Markdown"),
         ("↑ / k",        "Scroll history up"),
         ("↓ / j",        "Scroll history down"),
         ("Ctrl+T",       "Cycle theme"),

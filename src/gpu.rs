@@ -30,6 +30,7 @@ async fn query() -> Vec<GpuInfo> {
             "--query-gpu=name,utilization.gpu,memory.used,memory.total",
             "--format=csv,noheader,nounits",
         ])
+        .stderr(std::process::Stdio::null())
         .output()
         .await;
     let out = match out {

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::config::Config;
 use crate::gpu::GpuInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,10 +64,11 @@ pub struct App {
     pub session_path: Option<PathBuf>,
     pub project_dir:  PathBuf,
     pub pending_pause: bool,
+    pub cfg:          Arc<Config>,
 }
 
 impl App {
-    pub fn new(tx: mpsc::Sender<AppCommand>, project_dir: PathBuf) -> Self {
+    pub fn new(tx: mpsc::Sender<AppCommand>, project_dir: PathBuf, cfg: Arc<Config>) -> Self {
         Self {
             prompt:       String::new(),
             history:      Vec::new(),
@@ -83,6 +86,7 @@ impl App {
             session_path: None,
             project_dir,
             pending_pause: false,
+            cfg,
         }
     }
 
@@ -108,6 +112,21 @@ impl App {
                     duration_ms,
                     score,
                 });
+                // Auto-stop when Critic score reaches the configured threshold
+                if role == Role::Critic {
+                    if let (Some(s), Some(threshold)) = (
+                        self.history.last().and_then(|t| t.score),
+                        self.cfg.stop_at_score,
+                    ) {
+                        if s >= threshold {
+                            self.state = LoopState::Paused;
+                            self.status = format!(
+                                "Auto-paused: score {s}/10 reached threshold ({threshold}) — Space to resume, e to edit"
+                            );
+                            return;
+                        }
+                    }
+                }
                 if self.pending_pause {
                     self.pending_pause = false;
                     self.state = LoopState::Paused;
@@ -160,7 +179,8 @@ impl App {
         self.state = LoopState::Prewarm;
         self.status = "Warming model…".into();
         let tx = self.tx.clone();
-        tokio::spawn(crate::ollama::pre_warm(tx));
+        let cfg = Arc::clone(&self.cfg);
+        tokio::spawn(crate::ollama::pre_warm(tx, cfg));
     }
 
     pub fn toggle_pause(&mut self) {
@@ -188,7 +208,7 @@ impl App {
 
     pub fn save_session(&mut self) {
         if self.history.is_empty() { return; }
-        let ts = chrono::Local::now().format("%Y-%m-%dT%H%M%S").to_string();
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H%M%S%.3f").to_string();
         let fname = format!("duel-session-{ts}.json");
         let path = self.project_dir.join(&fname);
         let turns: Vec<serde_json::Value> = self.history.iter().map(|t| {
@@ -202,10 +222,11 @@ impl App {
             })
         }).collect();
         let doc = serde_json::json!({
-            "prompt":   self.prompt,
-            "model":    "qwen3.5:4b",
-            "saved_at": ts,
-            "turns":    turns,
+            "prompt":        self.prompt,
+            "actor_model":   self.cfg.actor_model,
+            "critic_model":  self.cfg.critic_model,
+            "saved_at":      ts,
+            "turns":         turns,
         });
         match serde_json::to_string_pretty(&doc)
             .map_err(anyhow::Error::from)
@@ -221,6 +242,47 @@ impl App {
         }
     }
 
+    pub fn export_markdown(&mut self) {
+        if self.history.is_empty() { return; }
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H%M%S%.3f").to_string();
+        let fname = format!("duel-session-{ts}.md");
+        let path = self.project_dir.join(&fname);
+
+        let mut out = String::new();
+        out.push_str("---\n");
+        out.push_str(&format!("prompt: {:?}\n", self.prompt));
+        out.push_str(&format!("actor_model: {:?}\n", self.cfg.actor_model));
+        out.push_str(&format!("critic_model: {:?}\n", self.cfg.critic_model));
+        out.push_str(&format!("timestamp: {:?}\n", ts));
+        out.push_str("---\n\n");
+
+        for turn in &self.history {
+            let heading = match turn.role {
+                Role::Actor => format!("## Iteration {} — ACTOR", turn.iteration),
+                Role::Critic => {
+                    let score_str = turn.score
+                        .map(|s| format!(" (Score: {s}/10)"))
+                        .unwrap_or_default();
+                    format!("## Iteration {} — CRITIC{score_str}", turn.iteration)
+                }
+            };
+            out.push_str(&heading);
+            out.push_str("\n\n");
+            out.push_str(&turn.content);
+            out.push_str("\n\n");
+        }
+
+        match std::fs::write(&path, out) {
+            Ok(_) => {
+                self.session_path = Some(path);
+                self.status = format!("Exported: {fname}");
+            }
+            Err(e) => {
+                self.status = format!("Export failed: {e}");
+            }
+        }
+    }
+
     pub fn scroll_up(&mut self)   { self.scroll = self.scroll.saturating_sub(1); }
     pub fn scroll_down(&mut self) { self.scroll = self.scroll.saturating_add(1); }
 
@@ -229,36 +291,90 @@ impl App {
         let prompt  = self.prompt.clone();
         let history = self.history.clone();
         let iter    = self.iteration;
-        tokio::spawn(crate::ollama::run_actor(tx, prompt, history, iter));
+        let cfg     = Arc::clone(&self.cfg);
+        tokio::spawn(crate::ollama::run_actor(tx, prompt, history, iter, cfg));
     }
 
     fn spawn_critic(&self) {
         let tx      = self.tx.clone();
         let history = self.history.clone();
         let iter    = self.iteration;
-        tokio::spawn(crate::ollama::run_critic(tx, history, iter));
+        let cfg     = Arc::clone(&self.cfg);
+        tokio::spawn(crate::ollama::run_critic(tx, history, iter, cfg));
     }
 }
 
 fn extract_score(text: &str) -> Option<u8> {
-    // Match "Score: 8/10", "8/10", "score: 8", etc.
     let lower = text.to_lowercase();
-    // Try "X/10" pattern
-    for cap in lower.split_whitespace() {
-        if let Some(slash) = cap.find("/10") {
-            let num_str: String = cap[..slash].chars().filter(|c| c.is_ascii_digit()).collect();
-            if let Ok(n) = num_str.parse::<u8>() {
+    // Strip markdown decoration before scanning
+    let clean: String = lower.chars()
+        .filter(|&c| c != '*' && c != '_' && c != '`')
+        .collect();
+
+    // Strategy 1: byte-level scan for "N/10" or "N / 10" (handles spaces around slash)
+    let bytes = clean.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i].is_ascii_digit() {
+            let ns = i;
+            while i < len && bytes[i].is_ascii_digit() { i += 1; }
+            let num_str = std::str::from_utf8(&bytes[ns..i]).unwrap_or("");
+            let mut j = i;
+            while j < len && bytes[j] == b' ' { j += 1; }
+            if j < len && bytes[j] == b'/' {
+                j += 1;
+                while j < len && bytes[j] == b' ' { j += 1; }
+                if j + 1 < len && bytes[j] == b'1' && bytes[j + 1] == b'0'
+                    && (j + 2 >= len || !bytes[j + 2].is_ascii_digit())
+                {
+                    if let Ok(n) = num_str.parse::<u8>() {
+                        if n <= 10 { return Some(n); }
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    // Strategy 2: "score:" or "score " prefix followed by digits
+    for prefix in &["score:", "score "] {
+        if let Some(pos) = clean.find(prefix) {
+            let after = clean[pos + prefix.len()..].trim_start();
+            let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num.parse::<u8>() {
                 if n <= 10 { return Some(n); }
             }
         }
     }
-    // Try "score: X"
-    if let Some(pos) = lower.find("score:") {
-        let after = lower[pos + 6..].trim_start();
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(n) = num_str.parse::<u8>() {
-            if n <= 10 { return Some(n); }
-        }
-    }
+
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_score;
+
+    #[test] fn score_colon_slash()      { assert_eq!(extract_score("Score: 8/10"), Some(8)); }
+    #[test] fn score_bare_slash()       { assert_eq!(extract_score("8/10"), Some(8)); }
+    #[test] fn score_spaces_slash()     { assert_eq!(extract_score("8 / 10"), Some(8)); }
+    #[test] fn score_markdown_bold()    { assert_eq!(extract_score("**Score: 8/10**"), Some(8)); }
+    #[test] fn score_bare_number()      { assert_eq!(extract_score("score 7"), Some(7)); }
+    #[test] fn score_colon_spaces()     { assert_eq!(extract_score("score: 7 / 10"), Some(7)); }
+    #[test] fn score_zero()             { assert_eq!(extract_score("Score: 0/10"), Some(0)); }
+    #[test] fn score_ten()              { assert_eq!(extract_score("Score: 10/10"), Some(10)); }
+    #[test] fn score_eleven_rejected()  { assert_eq!(extract_score("11/10"), None); }
+    #[test] fn score_out_of_range()     { assert_eq!(extract_score("Score: 11"), None); }
+    #[test] fn score_empty()            { assert_eq!(extract_score(""), None); }
+    #[test] fn score_no_score()         { assert_eq!(extract_score("Great response!"), None); }
+    #[test] fn score_not_nine_over_100(){ assert_eq!(extract_score("9/100"), None); }
+    #[test] fn score_markdown_italic()  { assert_eq!(extract_score("_Score: 6/10_"), Some(6)); }
+    #[test] fn score_mixed_case()       { assert_eq!(extract_score("SCORE: 5/10"), Some(5)); }
+    #[test] fn score_embedded_in_text() {
+        assert_eq!(extract_score("I give this a solid 7/10 overall."), Some(7));
+    }
+    #[test] fn score_newlines() {
+        assert_eq!(extract_score("Good work.\nScore: 9/10\nKeep it up."), Some(9));
+    }
 }
